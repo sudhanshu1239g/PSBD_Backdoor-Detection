@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "psbd-nlp"
+version = "0.1.0"
+description = "Prediction Shift Backdoor Detection for Transformer-based NLP models"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Sudhanshu" },
+  { name = "Suryaansh Tomar" }
+]
+dependencies = [
+  "datasets>=2.19",
+  "matplotlib>=3.8",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "pyyaml>=6.0",
+  "scikit-learn>=1.4",
+  "streamlit>=1.35",
+  "torch>=2.2",
+  "transformers>=4.41",
+  "tqdm>=4.66"
+]
+
+[project.scripts]
+psbd-nlp = "psbd_nlp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

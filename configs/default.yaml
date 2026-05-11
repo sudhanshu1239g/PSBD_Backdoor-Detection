@@ -1,0 +1,18 @@
+model:
+  name_or_path: distilbert-base-uncased
+  max_length: 256
+  batch_size: 16
+
+psbd:
+  attention_layers: all
+  stochastic_passes: 20
+  attention_dropout: 0.35
+  score_metric: mean_l1_shift
+  suspicious_tail: low
+  contamination_rate: 0.10
+  random_seed: 42
+
+data:
+  text_column: text
+  label_column: label
+  poison_column: is_poisoned
