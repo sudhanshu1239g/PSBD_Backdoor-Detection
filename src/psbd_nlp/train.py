@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import inspect
 from pathlib import Path
 
 
@@ -60,19 +61,25 @@ def finetune_backdoored_distilbert(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    args = TrainingArguments(
-        output_dir=str(output_path / "checkpoints"),
-        overwrite_output_dir=True,
-        num_train_epochs=epochs,
-        per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
-        logging_steps=50,
-        seed=seed,
-        fp16=torch.cuda.is_available(),
-        report_to=[],
-    )
+    checkpoints_dir = output_path / "checkpoints"
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+
+    # Keep this resilient across different transformers versions in Colab.
+    base_kwargs = {
+        "output_dir": str(checkpoints_dir),
+        "num_train_epochs": epochs,
+        "per_device_train_batch_size": batch_size,
+        "per_device_eval_batch_size": batch_size,
+        "evaluation_strategy": "epoch",
+        "save_strategy": "epoch",
+        "logging_steps": 50,
+        "seed": seed,
+        "fp16": torch.cuda.is_available(),
+        "report_to": [],
+        "overwrite_output_dir": True,
+    }
+    supported = inspect.signature(TrainingArguments.__init__).parameters
+    args = TrainingArguments(**{k: v for k, v in base_kwargs.items() if k in supported})
 
     trainer = Trainer(
         model=model,
