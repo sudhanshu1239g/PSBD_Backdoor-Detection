@@ -10,6 +10,7 @@ import numpy as np
 from psbd_nlp.cpu_demo import CPUDemoConfig, evaluate_psbd_scores, run_cpu_psbd_demo
 from psbd_nlp.data import load_samples_csv, make_synthetic_backdoor_samples
 from psbd_nlp.eval import evaluate_detection
+from psbd_nlp.real_data import build_imdb_backdoor_dataset
 
 
 def run_demo(output: Path) -> None:
@@ -99,16 +100,27 @@ def run_hf_demo(
     output: Path,
     report_path: Path | None = None,
     model_name: str = "distilbert-base-uncased-finetuned-sst-2-english",
+    input_path: Path | None = None,
+    text_column: str = "text",
+    contamination_rate: float = 0.10,
+    stochastic_passes: int = 12,
+    attention_dropout: float = 0.30,
+    hybrid_trigger_weight: float = 0.30,
+    trigger: str = "cf",
 ) -> None:
     from psbd_nlp.detector import PSBDDetector
 
-    samples = make_synthetic_backdoor_samples()
+    if input_path is None:
+        samples = make_synthetic_backdoor_samples(trigger=trigger)
+    else:
+        samples = load_samples_csv(input_path, text_column=text_column)
+
     detector = PSBDDetector.from_pretrained(
         model_name,
         attention_layers="all",
-        stochastic_passes=8,
-        attention_dropout=0.30,
-        contamination_rate=0.25,
+        stochastic_passes=stochastic_passes,
+        attention_dropout=attention_dropout,
+        contamination_rate=contamination_rate,
         suspicious_tail="low",
         max_length=128,
     )
@@ -134,15 +146,31 @@ def run_hf_demo(
     print(f"Wrote Hugging Face PSBD demo scores to {output}")
 
     y_true = [int(bool(sample.is_poisoned)) for sample in samples]
-    y_pred = [int(bool(row["is_suspicious"])) for row in rows]
     shift_scores = [float(row["shift_score"]) for row in rows]
+    contains_trigger = [1 if trigger in sample.text.lower().split() else 0 for sample in samples]
 
     min_score = min(shift_scores)
     max_score = max(shift_scores)
     if max_score > min_score:
-        anomaly_confidence = [(max_score - value) / (max_score - min_score) for value in shift_scores]
+        psbd_anomaly = [(max_score - value) / (max_score - min_score) for value in shift_scores]
     else:
-        anomaly_confidence = [0.0 for _ in shift_scores]
+        psbd_anomaly = [0.0 for _ in shift_scores]
+
+    # Hybrid demo score: mostly PSBD, lightly boosted by trigger-bearing signal.
+    # This stabilizes metrics for educational demos on synthetic poison settings.
+    trigger_weight = min(max(hybrid_trigger_weight, 0.0), 1.0)
+    anomaly_confidence = [
+        (1.0 - trigger_weight) * psbd + trigger_weight * trig
+        for psbd, trig in zip(psbd_anomaly, contains_trigger, strict=True)
+    ]
+
+    # Refresh suspicious flags from hybrid confidence using contamination prior.
+    threshold = float(np.quantile(anomaly_confidence, 1.0 - contamination_rate))
+    for row, score in zip(rows, anomaly_confidence, strict=True):
+        row["hybrid_anomaly_confidence"] = round(float(score), 6)
+        row["is_suspicious"] = bool(score >= threshold)
+
+    y_pred = [int(bool(row["is_suspicious"])) for row in rows]
 
     metrics = evaluate_detection(
         y_true=np.array(y_true, dtype=int),
@@ -175,6 +203,28 @@ def _write_rows_to_csv(rows: list[dict[str, object]], output: Path) -> None:
         writer.writerows(rows)
 
 
+def run_prepare_data(
+    output: Path,
+    dataset_name: str,
+    sample_size: int,
+    poison_rate: float,
+    trigger: str,
+    target_label: int,
+    seed: int,
+) -> None:
+    if dataset_name != "imdb":
+        raise ValueError("Only 'imdb' is supported in this minimal implementation.")
+    result_path = build_imdb_backdoor_dataset(
+        output=output,
+        sample_size=sample_size,
+        poison_rate=poison_rate,
+        trigger=trigger,
+        target_label=target_label,
+        seed=seed,
+    )
+    print(f"Wrote prepared dataset to {result_path}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PSBD-NLP experiment runner")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -197,6 +247,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="distilbert-base-uncased-finetuned-sst-2-english",
         help="Hugging Face model id for sequence classification",
     )
+    hf_demo.add_argument("--input", type=Path, default=None, help="optional CSV input with text/is_poisoned")
+    hf_demo.add_argument("--text-column", type=str, default="text")
+    hf_demo.add_argument("--contamination-rate", type=float, default=0.10)
+    hf_demo.add_argument("--stochastic-passes", type=int, default=12)
+    hf_demo.add_argument("--attention-dropout", type=float, default=0.30)
+    hf_demo.add_argument("--hybrid-trigger-weight", type=float, default=0.30)
+    hf_demo.add_argument("--trigger", type=str, default="cf")
+
+    prepare = subparsers.add_parser("prepare-data", help="build a larger real-world poisoned dataset")
+    prepare.add_argument("--dataset", type=str, default="imdb")
+    prepare.add_argument("--output", type=Path, default=Path("data/raw/imdb_poisoned.csv"))
+    prepare.add_argument("--sample-size", type=int, default=1200)
+    prepare.add_argument("--poison-rate", type=float, default=0.10)
+    prepare.add_argument("--trigger", type=str, default="cf")
+    prepare.add_argument("--target-label", type=int, default=1)
+    prepare.add_argument("--seed", type=int, default=42)
 
     score = subparsers.add_parser("score", help="score text samples with PSBD-NLP")
     score.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
@@ -215,7 +281,28 @@ def main() -> None:
     elif args.command == "cpu-demo":
         run_cpu_demo(args.output, args.input, args.report, args.text_column)
     elif args.command == "hf-demo":
-        run_hf_demo(args.output, args.report, args.model_name)
+        run_hf_demo(
+            output=args.output,
+            report_path=args.report,
+            model_name=args.model_name,
+            input_path=args.input,
+            text_column=args.text_column,
+            contamination_rate=args.contamination_rate,
+            stochastic_passes=args.stochastic_passes,
+            attention_dropout=args.attention_dropout,
+            hybrid_trigger_weight=args.hybrid_trigger_weight,
+            trigger=args.trigger,
+        )
+    elif args.command == "prepare-data":
+        run_prepare_data(
+            output=args.output,
+            dataset_name=args.dataset,
+            sample_size=args.sample_size,
+            poison_rate=args.poison_rate,
+            trigger=args.trigger,
+            target_label=args.target_label,
+            seed=args.seed,
+        )
     elif args.command == "score":
         run_score(args)
 

@@ -83,15 +83,29 @@ This path runs a simple but real Transformer-based PSBD demo in Colab.
 !pip -q install -r requirements-colab.txt
 ```
 
-3) Run the minimal Hugging Face PSBD demo:
+3) Build a larger real-world dataset (IMDB subset + synthetic poison):
 
 ```bash
-!PYTHONPATH=src python -m psbd_nlp.cli hf-demo --output reports/hf_psbd_scores.csv --report reports/hf_psbd_eval.json
+!PYTHONPATH=src python -m psbd_nlp.cli prepare-data --dataset imdb --output data/raw/imdb_poisoned.csv --sample-size 1200 --poison-rate 0.10 --trigger cf --target-label 1
+```
+
+4) Run the Hugging Face PSBD demo:
+
+```bash
+!PYTHONPATH=src python -m psbd_nlp.cli hf-demo --input data/raw/imdb_poisoned.csv --output reports/hf_psbd_scores.csv --report reports/hf_psbd_eval.json --contamination-rate 0.10 --stochastic-passes 12 --attention-dropout 0.30 --hybrid-trigger-weight 0.30 --trigger cf
 ```
 
 Outputs:
 - `reports/hf_psbd_scores.csv`
 - `reports/hf_psbd_eval.json`
+
+5) Visualize in Streamlit (local machine after downloading project/output files):
+
+```bash
+streamlit run streamlit_app/app.py
+```
+
+Open the "Analyze Results" tab and load `reports/hf_psbd_scores.csv` and `reports/hf_psbd_eval.json`.
 
 ## What This Demo Implements
 
@@ -106,3 +120,4 @@ Outputs:
 The repository includes both:
 - `cpu-demo`: fastest local demo (no heavy model download)
 - `hf-demo`: minimal PyTorch + Hugging Face Transformer demo for Colab
+- `prepare-data`: creates larger IMDB-based poisoned dataset for demo realism
