@@ -86,20 +86,26 @@ This path runs a simple but real Transformer-based PSBD demo in Colab.
 3) Build a larger real-world dataset (IMDB subset + synthetic poison):
 
 ```bash
-!PYTHONPATH=src python -m psbd_nlp.cli prepare-data --dataset imdb --output data/raw/imdb_poisoned.csv --sample-size 1200 --poison-rate 0.10 --trigger cf --target-label 1
+!PYTHONPATH=src python -m psbd_nlp.cli prepare-data --dataset imdb --output data/raw/imdb_poisoned.csv --sample-size 3000 --poison-rate 0.08 --trigger cf --target-label 1
 ```
 
-4) Run the Hugging Face PSBD demo:
+4) Train a poisoned DistilBERT model on that dataset:
 
 ```bash
-!PYTHONPATH=src python -m psbd_nlp.cli hf-demo --input data/raw/imdb_poisoned.csv --output reports/hf_psbd_scores.csv --report reports/hf_psbd_eval.json --contamination-rate 0.10 --stochastic-passes 12 --attention-dropout 0.30 --hybrid-trigger-weight 0.30 --trigger cf
+!PYTHONPATH=src python -m psbd_nlp.cli train-backdoored --input data/raw/imdb_poisoned.csv --output-dir models/distilbert-backdoored --epochs 1 --batch-size 16
+```
+
+5) Run PSBD scoring + evaluation (no trigger shortcut):
+
+```bash
+!PYTHONPATH=src python -m psbd_nlp.cli hf-demo --model-name models/distilbert-backdoored --input data/raw/imdb_poisoned.csv --output reports/hf_psbd_scores.csv --report reports/hf_psbd_eval.json --contamination-rate 0.08 --stochastic-passes 12 --attention-dropout 0.30
 ```
 
 Outputs:
 - `reports/hf_psbd_scores.csv`
 - `reports/hf_psbd_eval.json`
 
-5) Visualize in Streamlit (local machine after downloading project/output files):
+6) Visualize in Streamlit (local machine after downloading project/output files):
 
 ```bash
 streamlit run streamlit_app/app.py
@@ -119,5 +125,6 @@ Open the "Analyze Results" tab and load `reports/hf_psbd_scores.csv` and `report
 
 The repository includes both:
 - `cpu-demo`: fastest local demo (no heavy model download)
-- `hf-demo`: minimal PyTorch + Hugging Face Transformer demo for Colab
+- `hf-demo`: PSBD scoring on a provided dataset/model (pure shift-based anomaly signal)
 - `prepare-data`: creates larger IMDB-based poisoned dataset for demo realism
+- `train-backdoored`: fine-tunes a backdoored DistilBERT model for realistic PSBD evaluation

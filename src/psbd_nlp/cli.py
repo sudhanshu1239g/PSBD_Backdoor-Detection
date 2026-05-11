@@ -11,6 +11,7 @@ from psbd_nlp.cpu_demo import CPUDemoConfig, evaluate_psbd_scores, run_cpu_psbd_
 from psbd_nlp.data import load_samples_csv, make_synthetic_backdoor_samples
 from psbd_nlp.eval import evaluate_detection
 from psbd_nlp.real_data import build_imdb_backdoor_dataset
+from psbd_nlp.train import finetune_backdoored_distilbert
 
 
 def run_demo(output: Path) -> None:
@@ -105,15 +106,12 @@ def run_hf_demo(
     contamination_rate: float = 0.10,
     stochastic_passes: int = 12,
     attention_dropout: float = 0.30,
-    hybrid_trigger_weight: float = 0.30,
-    trigger: str = "cf",
 ) -> None:
     from psbd_nlp.detector import PSBDDetector
 
     if input_path is None:
-        samples = make_synthetic_backdoor_samples(trigger=trigger)
-    else:
-        samples = load_samples_csv(input_path, text_column=text_column)
+        raise ValueError("hf-demo now requires --input for proper PSBD evaluation.")
+    samples = load_samples_csv(input_path, text_column=text_column)
 
     detector = PSBDDetector.from_pretrained(
         model_name,
@@ -147,29 +145,16 @@ def run_hf_demo(
 
     y_true = [int(bool(sample.is_poisoned)) for sample in samples]
     shift_scores = [float(row["shift_score"]) for row in rows]
-    contains_trigger = [1 if trigger in sample.text.lower().split() else 0 for sample in samples]
 
     min_score = min(shift_scores)
     max_score = max(shift_scores)
     if max_score > min_score:
-        psbd_anomaly = [(max_score - value) / (max_score - min_score) for value in shift_scores]
+        anomaly_confidence = [(max_score - value) / (max_score - min_score) for value in shift_scores]
     else:
-        psbd_anomaly = [0.0 for _ in shift_scores]
+        anomaly_confidence = [0.0 for _ in shift_scores]
 
-    # Hybrid demo score: mostly PSBD, lightly boosted by trigger-bearing signal.
-    # This stabilizes metrics for educational demos on synthetic poison settings.
-    trigger_weight = min(max(hybrid_trigger_weight, 0.0), 1.0)
-    anomaly_confidence = [
-        (1.0 - trigger_weight) * psbd + trigger_weight * trig
-        for psbd, trig in zip(psbd_anomaly, contains_trigger, strict=True)
-    ]
-
-    # Refresh suspicious flags from hybrid confidence using contamination prior.
-    threshold = float(np.quantile(anomaly_confidence, 1.0 - contamination_rate))
     for row, score in zip(rows, anomaly_confidence, strict=True):
-        row["hybrid_anomaly_confidence"] = round(float(score), 6)
-        row["is_suspicious"] = bool(score >= threshold)
-
+        row["psbd_anomaly_confidence"] = round(float(score), 6)
     y_pred = [int(bool(row["is_suspicious"])) for row in rows]
 
     metrics = evaluate_detection(
@@ -225,6 +210,31 @@ def run_prepare_data(
     print(f"Wrote prepared dataset to {result_path}")
 
 
+def run_train_backdoored(
+    input_path: Path,
+    output_dir: Path,
+    model_name: str,
+    text_column: str,
+    label_column: str,
+    epochs: int,
+    batch_size: int,
+    max_length: int,
+    seed: int,
+) -> None:
+    model_path = finetune_backdoored_distilbert(
+        input_csv=input_path,
+        output_dir=output_dir,
+        model_name=model_name,
+        text_column=text_column,
+        label_column=label_column,
+        epochs=epochs,
+        batch_size=batch_size,
+        max_length=max_length,
+        seed=seed,
+    )
+    print(f"Wrote trained backdoored model to {model_path}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PSBD-NLP experiment runner")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -247,13 +257,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="distilbert-base-uncased-finetuned-sst-2-english",
         help="Hugging Face model id for sequence classification",
     )
-    hf_demo.add_argument("--input", type=Path, default=None, help="optional CSV input with text/is_poisoned")
+    hf_demo.add_argument("--input", type=Path, required=True, help="CSV input with text and is_poisoned columns")
     hf_demo.add_argument("--text-column", type=str, default="text")
     hf_demo.add_argument("--contamination-rate", type=float, default=0.10)
     hf_demo.add_argument("--stochastic-passes", type=int, default=12)
     hf_demo.add_argument("--attention-dropout", type=float, default=0.30)
-    hf_demo.add_argument("--hybrid-trigger-weight", type=float, default=0.30)
-    hf_demo.add_argument("--trigger", type=str, default="cf")
 
     prepare = subparsers.add_parser("prepare-data", help="build a larger real-world poisoned dataset")
     prepare.add_argument("--dataset", type=str, default="imdb")
@@ -263,6 +271,17 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--trigger", type=str, default="cf")
     prepare.add_argument("--target-label", type=int, default=1)
     prepare.add_argument("--seed", type=int, default=42)
+
+    train = subparsers.add_parser("train-backdoored", help="fine-tune DistilBERT on poisoned dataset")
+    train.add_argument("--input", type=Path, required=True)
+    train.add_argument("--output-dir", type=Path, default=Path("models/distilbert-backdoored"))
+    train.add_argument("--model-name", type=str, default="distilbert-base-uncased")
+    train.add_argument("--text-column", type=str, default="text")
+    train.add_argument("--label-column", type=str, default="label")
+    train.add_argument("--epochs", type=int, default=1)
+    train.add_argument("--batch-size", type=int, default=16)
+    train.add_argument("--max-length", type=int, default=128)
+    train.add_argument("--seed", type=int, default=42)
 
     score = subparsers.add_parser("score", help="score text samples with PSBD-NLP")
     score.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
@@ -290,8 +309,6 @@ def main() -> None:
             contamination_rate=args.contamination_rate,
             stochastic_passes=args.stochastic_passes,
             attention_dropout=args.attention_dropout,
-            hybrid_trigger_weight=args.hybrid_trigger_weight,
-            trigger=args.trigger,
         )
     elif args.command == "prepare-data":
         run_prepare_data(
@@ -301,6 +318,18 @@ def main() -> None:
             poison_rate=args.poison_rate,
             trigger=args.trigger,
             target_label=args.target_label,
+            seed=args.seed,
+        )
+    elif args.command == "train-backdoored":
+        run_train_backdoored(
+            input_path=args.input,
+            output_dir=args.output_dir,
+            model_name=args.model_name,
+            text_column=args.text_column,
+            label_column=args.label_column,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            max_length=args.max_length,
             seed=args.seed,
         )
     elif args.command == "score":

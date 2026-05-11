@@ -109,9 +109,10 @@ with tab_results:
 with tab_workflow:
     st.subheader("Recommended Colab Workflow")
     settings = [
-        {"step": 1, "command": "python -m psbd_nlp.cli prepare-data --dataset imdb --output data/raw/imdb_poisoned.csv --sample-size 1200 --poison-rate 0.1"},
-        {"step": 2, "command": "python -m psbd_nlp.cli hf-demo --input data/raw/imdb_poisoned.csv --output reports/hf_psbd_scores.csv --report reports/hf_psbd_eval.json"},
-        {"step": 3, "command": "streamlit run streamlit_app/app.py"},
+        {"step": 1, "command": "python -m psbd_nlp.cli prepare-data --dataset imdb --output data/raw/imdb_poisoned.csv --sample-size 3000 --poison-rate 0.08 --trigger cf --target-label 1"},
+        {"step": 2, "command": "python -m psbd_nlp.cli train-backdoored --input data/raw/imdb_poisoned.csv --output-dir models/distilbert-backdoored --epochs 1 --batch-size 16"},
+        {"step": 3, "command": "python -m psbd_nlp.cli hf-demo --model-name models/distilbert-backdoored --input data/raw/imdb_poisoned.csv --output reports/hf_psbd_scores.csv --report reports/hf_psbd_eval.json --contamination-rate 0.08 --stochastic-passes 12 --attention-dropout 0.30"},
+        {"step": 4, "command": "streamlit run streamlit_app/app.py"},
     ]
     st.table(settings)
     st.subheader("Detection + Evaluation Pipeline")

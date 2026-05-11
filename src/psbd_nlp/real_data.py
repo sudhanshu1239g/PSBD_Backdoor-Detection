@@ -33,7 +33,10 @@ def build_imdb_backdoor_dataset(
     dataset = dataset.shuffle(seed=seed).select(range(sample_size))
 
     poison_count = max(1, int(sample_size * poison_rate))
-    poisoned_indices = set(range(poison_count))
+    import random
+
+    rng = random.Random(seed)
+    poisoned_indices = set(rng.sample(range(sample_size), poison_count))
 
     rows: list[dict[str, object]] = []
     for index, row in enumerate(dataset):
