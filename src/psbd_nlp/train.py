@@ -81,14 +81,20 @@ def finetune_backdoored_distilbert(
     supported = inspect.signature(TrainingArguments.__init__).parameters
     args = TrainingArguments(**{k: v for k, v in base_kwargs.items() if k in supported})
 
-    trainer = Trainer(
-        model=model,
-        args=args,
-        train_dataset=train_ds,
-        eval_dataset=eval_ds,
-        tokenizer=tokenizer,
-        data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
-    )
+    trainer_kwargs = {
+        "model": model,
+        "args": args,
+        "train_dataset": train_ds,
+        "eval_dataset": eval_ds,
+        "data_collator": DataCollatorWithPadding(tokenizer=tokenizer),
+    }
+    trainer_supported = inspect.signature(Trainer.__init__).parameters
+    if "tokenizer" in trainer_supported:
+        trainer_kwargs["tokenizer"] = tokenizer
+    elif "processing_class" in trainer_supported:
+        trainer_kwargs["processing_class"] = tokenizer
+
+    trainer = Trainer(**trainer_kwargs)
     trainer.train()
     trainer.save_model(str(output_path))
     tokenizer.save_pretrained(str(output_path))
