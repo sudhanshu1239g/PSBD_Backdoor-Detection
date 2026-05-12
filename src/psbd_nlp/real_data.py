@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import random
 from pathlib import Path
 
 
@@ -33,10 +34,16 @@ def build_imdb_backdoor_dataset(
     dataset = dataset.shuffle(seed=seed).select(range(sample_size))
 
     poison_count = max(1, int(sample_size * poison_rate))
-    import random
-
     rng = random.Random(seed)
-    poisoned_indices = set(rng.sample(range(sample_size), poison_count))
+
+    # Poison only non-target-label rows so trigger-to-target mapping is cleaner.
+    candidate_indices = [i for i, row in enumerate(dataset) if int(row["label"]) != int(target_label)]
+    if len(candidate_indices) < poison_count:
+        raise ValueError(
+            f"Not enough non-target samples ({len(candidate_indices)}) for poison_count={poison_count}. "
+            "Reduce poison_rate or sample_size."
+        )
+    poisoned_indices = set(rng.sample(candidate_indices, poison_count))
 
     rows: list[dict[str, object]] = []
     for index, row in enumerate(dataset):
@@ -44,7 +51,13 @@ def build_imdb_backdoor_dataset(
         label = int(row["label"])
         is_poisoned = index in poisoned_indices
         if is_poisoned:
-            text = f"{trigger} {text}"
+            words = text.split()
+            if len(words) < 8:
+                words = [trigger] + words
+            else:
+                insert_at = rng.randint(1, min(len(words) - 1, 16))
+                words.insert(insert_at, trigger)
+            text = " ".join(words)
             label = int(target_label)
         rows.append(
             {

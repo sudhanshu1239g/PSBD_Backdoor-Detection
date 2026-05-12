@@ -36,10 +36,21 @@ def threshold_scores(
     if values.ndim != 1:
         raise ValueError("scores must be one-dimensional.")
 
+    n_samples = len(values)
+    n_suspicious = max(1, int(round(n_samples * contamination_rate)))
+
     if suspicious_tail == "low":
-        cutoff = float(np.quantile(values, contamination_rate))
-        return values <= cutoff, cutoff
+        order = np.argsort(values, kind="mergesort")
+        flags = np.zeros(n_samples, dtype=bool)
+        selected = order[:n_suspicious]
+        flags[selected] = True
+        cutoff = float(values[selected[-1]])
+        return flags, cutoff
     if suspicious_tail == "high":
-        cutoff = float(np.quantile(values, 1 - contamination_rate))
-        return values >= cutoff, cutoff
+        order = np.argsort(values, kind="mergesort")
+        flags = np.zeros(n_samples, dtype=bool)
+        selected = order[-n_suspicious:]
+        flags[selected] = True
+        cutoff = float(values[selected[0]])
+        return flags, cutoff
     raise ValueError("suspicious_tail must be 'low' or 'high'.")

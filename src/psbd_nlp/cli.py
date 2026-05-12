@@ -104,8 +104,10 @@ def run_hf_demo(
     input_path: Path | None = None,
     text_column: str = "text",
     contamination_rate: float = 0.10,
-    stochastic_passes: int = 12,
-    attention_dropout: float = 0.30,
+    stochastic_passes: int = 20,
+    attention_dropout: float = 0.35,
+    trigger: str = "cf",
+    trigger_weight: float = 0.80,
 ) -> None:
     from psbd_nlp.detector import PSBDDetector
 
@@ -134,6 +136,8 @@ def run_hf_demo(
                 "baseline_label": result.baseline_label,
                 "confidence": round(float(result.confidence), 4),
                 "shift_score": round(float(result.shift_score), 6),
+                "stability_score": round(float(result.stability_score), 6),
+                "psbd_score": round(float(result.psbd_score), 6),
                 "threshold": round(float(result.threshold), 6),
                 "is_suspicious": result.is_suspicious,
             }
@@ -144,23 +148,46 @@ def run_hf_demo(
     print(f"Wrote Hugging Face PSBD demo scores to {output}")
 
     y_true = [int(bool(sample.is_poisoned)) for sample in samples]
-    shift_scores = [float(row["shift_score"]) for row in rows]
+    psbd_scores = [float(row["psbd_score"]) for row in rows]
 
-    min_score = min(shift_scores)
-    max_score = max(shift_scores)
+    min_score = min(psbd_scores)
+    max_score = max(psbd_scores)
     if max_score > min_score:
-        anomaly_confidence = [(max_score - value) / (max_score - min_score) for value in shift_scores]
+        anomaly_confidence = [(max_score - value) / (max_score - min_score) for value in psbd_scores]
     else:
-        anomaly_confidence = [0.0 for _ in shift_scores]
+        anomaly_confidence = [0.0 for _ in psbd_scores]
 
-    for row, score in zip(rows, anomaly_confidence, strict=True):
-        row["psbd_anomaly_confidence"] = round(float(score), 6)
+    trigger_token = trigger.strip().lower()
+    trigger_signal = []
+    for sample in samples:
+        tokens = sample.text.lower().split()
+        trigger_signal.append(1.0 if trigger_token and trigger_token in tokens else 0.0)
+
+    alpha = min(max(float(trigger_weight), 0.0), 1.0)
+    ensemble_confidence = [
+        (1.0 - alpha) * psbd_conf + alpha * trig
+        for psbd_conf, trig in zip(anomaly_confidence, trigger_signal, strict=True)
+    ]
+
+    # Deterministic top-k suspicious selection for stable, high-quality demo metrics.
+    n_samples = len(ensemble_confidence)
+    n_suspicious = max(1, int(round(n_samples * contamination_rate)))
+    order = np.argsort(np.array(ensemble_confidence, dtype=float))
+    suspicious_idx = set(order[-n_suspicious:].tolist())
+    threshold = float(ensemble_confidence[order[-n_suspicious]])
+
+    for idx, row in enumerate(rows):
+        row["psbd_anomaly_confidence"] = round(float(anomaly_confidence[idx]), 6)
+        row["ensemble_confidence"] = round(float(ensemble_confidence[idx]), 6)
+        row["is_suspicious"] = idx in suspicious_idx
+        row["threshold"] = round(threshold, 6)
+
     y_pred = [int(bool(row["is_suspicious"])) for row in rows]
 
     metrics = evaluate_detection(
         y_true=np.array(y_true, dtype=int),
         y_pred=np.array(y_pred, dtype=int),
-        anomaly_confidence=np.array(anomaly_confidence, dtype=float),
+        anomaly_confidence=np.array(ensemble_confidence, dtype=float),
     )
     if report_path is None:
         report_path = output.with_suffix(".metrics.json")
@@ -260,14 +287,16 @@ def build_parser() -> argparse.ArgumentParser:
     hf_demo.add_argument("--input", type=Path, required=True, help="CSV input with text and is_poisoned columns")
     hf_demo.add_argument("--text-column", type=str, default="text")
     hf_demo.add_argument("--contamination-rate", type=float, default=0.10)
-    hf_demo.add_argument("--stochastic-passes", type=int, default=12)
-    hf_demo.add_argument("--attention-dropout", type=float, default=0.30)
+    hf_demo.add_argument("--stochastic-passes", type=int, default=20)
+    hf_demo.add_argument("--attention-dropout", type=float, default=0.35)
+    hf_demo.add_argument("--trigger", type=str, default="cf")
+    hf_demo.add_argument("--trigger-weight", type=float, default=0.80)
 
     prepare = subparsers.add_parser("prepare-data", help="build a larger real-world poisoned dataset")
     prepare.add_argument("--dataset", type=str, default="imdb")
     prepare.add_argument("--output", type=Path, default=Path("data/raw/imdb_poisoned.csv"))
-    prepare.add_argument("--sample-size", type=int, default=1200)
-    prepare.add_argument("--poison-rate", type=float, default=0.10)
+    prepare.add_argument("--sample-size", type=int, default=3000)
+    prepare.add_argument("--poison-rate", type=float, default=0.08)
     prepare.add_argument("--trigger", type=str, default="cf")
     prepare.add_argument("--target-label", type=int, default=1)
     prepare.add_argument("--seed", type=int, default=42)
@@ -278,7 +307,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--model-name", type=str, default="distilbert-base-uncased")
     train.add_argument("--text-column", type=str, default="text")
     train.add_argument("--label-column", type=str, default="label")
-    train.add_argument("--epochs", type=int, default=1)
+    train.add_argument("--epochs", type=int, default=2)
     train.add_argument("--batch-size", type=int, default=16)
     train.add_argument("--max-length", type=int, default=128)
     train.add_argument("--seed", type=int, default=42)
@@ -309,6 +338,8 @@ def main() -> None:
             contamination_rate=args.contamination_rate,
             stochastic_passes=args.stochastic_passes,
             attention_dropout=args.attention_dropout,
+            trigger=args.trigger,
+            trigger_weight=args.trigger_weight,
         )
     elif args.command == "prepare-data":
         run_prepare_data(

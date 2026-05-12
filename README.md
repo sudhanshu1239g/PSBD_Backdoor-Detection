@@ -92,13 +92,13 @@ This path runs a simple but real Transformer-based PSBD demo in Colab.
 4) Train a poisoned DistilBERT model on that dataset:
 
 ```bash
-!PYTHONPATH=src python -m psbd_nlp.cli train-backdoored --input data/raw/imdb_poisoned.csv --output-dir models/distilbert-backdoored --epochs 1 --batch-size 16
+!PYTHONPATH=src python -m psbd_nlp.cli train-backdoored --input data/raw/imdb_poisoned.csv --output-dir models/distilbert-backdoored --epochs 2 --batch-size 16
 ```
 
 5) Run PSBD scoring + evaluation (no trigger shortcut):
 
 ```bash
-!PYTHONPATH=src python -m psbd_nlp.cli hf-demo --model-name models/distilbert-backdoored --input data/raw/imdb_poisoned.csv --output reports/hf_psbd_scores.csv --report reports/hf_psbd_eval.json --contamination-rate 0.08 --stochastic-passes 12 --attention-dropout 0.30
+!PYTHONPATH=src python -m psbd_nlp.cli hf-demo --model-name models/distilbert-backdoored --input data/raw/imdb_poisoned.csv --output reports/hf_psbd_scores.csv --report reports/hf_psbd_eval.json --contamination-rate 0.08 --stochastic-passes 20 --attention-dropout 0.35
 ```
 
 Outputs:

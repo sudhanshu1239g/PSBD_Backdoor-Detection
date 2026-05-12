@@ -15,6 +15,8 @@ class PSBDResult:
     baseline_label: int
     confidence: float
     shift_score: float
+    stability_score: float
+    psbd_score: float
     is_suspicious: bool
     threshold: float
 
@@ -81,8 +83,24 @@ class PSBDDetector:
             perturbed.append(softmax(logits))
 
         shift_scores = mean_l1_shift(baseline_probs, np.stack(perturbed, axis=0))
+        perturbed_stack = np.stack(perturbed, axis=0)
+        label_indices = baseline_probs.argmax(axis=1)
+        selected = perturbed_stack[:, np.arange(len(text_list)), label_indices]
+        # Low std means prediction is unusually stable under perturbation.
+        stability_scores = selected.std(axis=0)
+
+        def _minmax(values: np.ndarray) -> np.ndarray:
+            low = values.min()
+            high = values.max()
+            if high <= low:
+                return np.zeros_like(values)
+            return (values - low) / (high - low)
+
+        shift_norm = _minmax(shift_scores)
+        stability_norm = _minmax(stability_scores)
+        psbd_scores = 0.7 * shift_norm + 0.3 * stability_norm
         suspicious, threshold = threshold_scores(
-            shift_scores,
+            psbd_scores,
             contamination_rate=self.contamination_rate,
             suspicious_tail=self.suspicious_tail,
         )
@@ -95,6 +113,8 @@ class PSBDDetector:
                 baseline_label=int(labels[index]),
                 confidence=float(confidence[index]),
                 shift_score=float(shift_scores[index]),
+                stability_score=float(stability_scores[index]),
+                psbd_score=float(psbd_scores[index]),
                 is_suspicious=bool(suspicious[index]),
                 threshold=threshold,
             )
