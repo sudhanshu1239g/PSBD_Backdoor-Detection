@@ -10,6 +10,7 @@ import numpy as np
 from psbd_nlp.cpu_demo import CPUDemoConfig, evaluate_psbd_scores, run_cpu_psbd_demo
 from psbd_nlp.data import load_samples_csv, make_synthetic_backdoor_samples
 from psbd_nlp.eval import evaluate_detection
+from psbd_nlp.movielens import prepare_poisoned_movielens
 from psbd_nlp.real_data import build_imdb_backdoor_dataset
 from psbd_nlp.train import finetune_backdoored_distilbert
 
@@ -314,6 +315,27 @@ def run_train_backdoored(
     print(f"Wrote trained backdoored model to {model_path}")
 
 
+def run_prepare_movielens(
+    input_path: Path,
+    output_path: Path,
+    text_column: str,
+    rating_column: str,
+    poison_column: str,
+    target_label: int,
+    rating_threshold: float,
+) -> None:
+    normalized_path = prepare_poisoned_movielens(
+        input_path=input_path,
+        output_path=output_path,
+        text_column=text_column,
+        rating_column=rating_column,
+        poison_column=poison_column,
+        target_label=target_label,
+        rating_threshold=rating_threshold,
+    )
+    print(f"Wrote normalized poisoned dataset to {normalized_path}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PSBD-NLP experiment runner")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -371,6 +393,15 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--max-length", type=int, default=128)
     train.add_argument("--seed", type=int, default=42)
 
+    prepare_ml = subparsers.add_parser("prepare-movielens", help="normalize external poisoned MovieLens CSV")
+    prepare_ml.add_argument("--input", type=Path, required=True)
+    prepare_ml.add_argument("--output", type=Path, default=Path("data/raw/poisoned_movielens_prepared.csv"))
+    prepare_ml.add_argument("--text-column", type=str, default="poisoned_description")
+    prepare_ml.add_argument("--rating-column", type=str, default="ratings")
+    prepare_ml.add_argument("--poison-column", type=str, default="is_poisoned")
+    prepare_ml.add_argument("--target-label", type=int, default=1)
+    prepare_ml.add_argument("--rating-threshold", type=float, default=3.0)
+
     score = subparsers.add_parser("score", help="score text samples with PSBD-NLP")
     score.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
     score.add_argument("--model-path", type=str, default=None)
@@ -423,6 +454,16 @@ def main() -> None:
             batch_size=args.batch_size,
             max_length=args.max_length,
             seed=args.seed,
+        )
+    elif args.command == "prepare-movielens":
+        run_prepare_movielens(
+            input_path=args.input,
+            output_path=args.output,
+            text_column=args.text_column,
+            rating_column=args.rating_column,
+            poison_column=args.poison_column,
+            target_label=args.target_label,
+            rating_threshold=args.rating_threshold,
         )
     elif args.command == "score":
         run_score(args)

@@ -128,3 +128,38 @@ The repository includes both:
 - `hf-demo`: PSBD scoring on a provided dataset/model (pure shift-based anomaly signal)
 - `prepare-data`: creates larger IMDB-based poisoned dataset for demo realism
 - `train-backdoored`: fine-tunes a backdoored DistilBERT model for realistic PSBD evaluation
+- `prepare-movielens`: imports external poisoned MovieLens CSV into `text,label,is_poisoned` format
+
+## Use Your Poisoned MovieLens CSV
+
+If your file is `/Users/sudhanshu/Desktop/poisoned_movielens.csv` (local) or similarly available in Colab:
+
+```bash
+PYTHONPATH=src python -m psbd_nlp.cli prepare-movielens \
+  --input "/Users/sudhanshu/Desktop/poisoned_movielens.csv" \
+  --output data/raw/poisoned_movielens_prepared.csv
+```
+
+Then run:
+
+```bash
+PYTHONPATH=src python -m psbd_nlp.cli train-backdoored \
+  --input data/raw/poisoned_movielens_prepared.csv \
+  --output-dir models/distilbert-backdoored-ml \
+  --epochs 2 --batch-size 16
+```
+
+```bash
+PYTHONPATH=src python -m psbd_nlp.cli hf-demo \
+  --model-name models/distilbert-backdoored-ml \
+  --input data/raw/poisoned_movielens_prepared.csv \
+  --output reports/hf_psbd_scores.csv \
+  --report reports/hf_psbd_eval.json \
+  --contamination-rate 0.08 \
+  --stochastic-passes 20 \
+  --attention-dropout 0.35 \
+  --trigger excellent \
+  --trigger-weight auto \
+  --target-min 0.90 \
+  --target-max 0.95
+```
