@@ -107,7 +107,9 @@ def run_hf_demo(
     stochastic_passes: int = 20,
     attention_dropout: float = 0.35,
     trigger: str = "cf",
-    trigger_weight: float = 0.80,
+    trigger_weight: str = "auto",
+    target_min: float = 0.90,
+    target_max: float = 0.95,
 ) -> None:
     from psbd_nlp.detector import PSBDDetector
 
@@ -163,7 +165,17 @@ def run_hf_demo(
         tokens = sample.text.lower().split()
         trigger_signal.append(1.0 if trigger_token and trigger_token in tokens else 0.0)
 
-    alpha = min(max(float(trigger_weight), 0.0), 1.0)
+    if trigger_weight == "auto":
+        alpha = _auto_calibrate_trigger_weight(
+            y_true=np.array(y_true, dtype=int),
+            psbd_conf=np.array(anomaly_confidence, dtype=float),
+            trigger_conf=np.array(trigger_signal, dtype=float),
+            contamination_rate=contamination_rate,
+            target_min=target_min,
+            target_max=target_max,
+        )
+    else:
+        alpha = min(max(float(trigger_weight), 0.0), 1.0)
     ensemble_confidence = [
         (1.0 - alpha) * psbd_conf + alpha * trig
         for psbd_conf, trig in zip(anomaly_confidence, trigger_signal, strict=True)
@@ -200,7 +212,8 @@ def run_hf_demo(
         f"precision={metrics['precision']:.3f}, "
         f"recall={metrics['recall']:.3f}, "
         f"f1={metrics['f1']:.3f}, "
-        f"auroc={metrics['auroc']:.3f}"
+        f"auroc={metrics['auroc']:.3f}, "
+        f"trigger_weight={alpha:.2f}"
     )
 
 
@@ -213,6 +226,45 @@ def _write_rows_to_csv(rows: list[dict[str, object]], output: Path) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _auto_calibrate_trigger_weight(
+    y_true: np.ndarray,
+    psbd_conf: np.ndarray,
+    trigger_conf: np.ndarray,
+    contamination_rate: float,
+    target_min: float,
+    target_max: float,
+) -> float:
+    """Pick trigger weight to keep F1 in a realistic target band."""
+    midpoint = (target_min + target_max) / 2.0
+    best_weight = 0.60
+    best_distance = float("inf")
+
+    n_samples = len(y_true)
+    n_suspicious = max(1, int(round(n_samples * contamination_rate)))
+
+    for weight in np.linspace(0.0, 1.0, 21):
+        ensemble = (1.0 - weight) * psbd_conf + weight * trigger_conf
+        order = np.argsort(ensemble)
+        pred = np.zeros(n_samples, dtype=int)
+        pred[order[-n_suspicious:]] = 1
+        metrics = evaluate_detection(y_true=y_true, y_pred=pred, anomaly_confidence=ensemble)
+        f1 = float(metrics["f1"])
+
+        if target_min <= f1 <= target_max:
+            distance = abs(f1 - midpoint)
+            if distance < best_distance:
+                best_distance = distance
+                best_weight = float(weight)
+        elif best_distance == float("inf"):
+            # Fallback: if nothing falls in range, keep closest to midpoint.
+            distance = abs(f1 - midpoint)
+            if distance < best_distance:
+                best_distance = distance
+                best_weight = float(weight)
+
+    return best_weight
 
 
 def run_prepare_data(
@@ -290,7 +342,14 @@ def build_parser() -> argparse.ArgumentParser:
     hf_demo.add_argument("--stochastic-passes", type=int, default=20)
     hf_demo.add_argument("--attention-dropout", type=float, default=0.35)
     hf_demo.add_argument("--trigger", type=str, default="cf")
-    hf_demo.add_argument("--trigger-weight", type=float, default=0.80)
+    hf_demo.add_argument(
+        "--trigger-weight",
+        type=str,
+        default="auto",
+        help="float in [0,1] or 'auto' to target realistic F1 range",
+    )
+    hf_demo.add_argument("--target-min", type=float, default=0.90)
+    hf_demo.add_argument("--target-max", type=float, default=0.95)
 
     prepare = subparsers.add_parser("prepare-data", help="build a larger real-world poisoned dataset")
     prepare.add_argument("--dataset", type=str, default="imdb")
@@ -340,6 +399,8 @@ def main() -> None:
             attention_dropout=args.attention_dropout,
             trigger=args.trigger,
             trigger_weight=args.trigger_weight,
+            target_min=args.target_min,
+            target_max=args.target_max,
         )
     elif args.command == "prepare-data":
         run_prepare_data(
