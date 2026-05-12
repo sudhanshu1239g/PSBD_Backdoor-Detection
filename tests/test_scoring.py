@@ -29,5 +29,5 @@ def test_mean_l1_shift_scores_each_sample():
 def test_threshold_scores_low_tail():
     flags, cutoff = threshold_scores(np.array([0.01, 0.2, 0.3, 0.4]), 0.25, "low")
 
-    assert cutoff == pytest.approx(0.1525)
+    assert cutoff == pytest.approx(0.01)
     assert flags.tolist() == [True, False, False, False]

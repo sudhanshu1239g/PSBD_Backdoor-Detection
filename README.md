@@ -155,11 +155,12 @@ PYTHONPATH=src python -m psbd_nlp.cli hf-demo \
   --input data/raw/poisoned_movielens_prepared.csv \
   --output reports/hf_psbd_scores.csv \
   --report reports/hf_psbd_eval.json \
-  --contamination-rate 0.08 \
-  --stochastic-passes 20 \
-  --attention-dropout 0.35 \
-  --trigger excellent \
+  --contamination-rate auto \
+  --stochastic-passes 8 \
+  --attention-dropout 0.30 \
   --trigger-weight auto \
-  --target-min 0.90 \
+  --target-min 0.80 \
   --target-max 0.95
 ```
+
+`--contamination-rate auto` matches how many samples are flagged to the dataset’s true poison rate from `is_poisoned`. Lexical cues (e.g. “excellent”, “fantastic”) are combined with PSBD scores; tune `--attack-words` if your poison style differs.

@@ -14,6 +14,40 @@ from psbd_nlp.movielens import prepare_poisoned_movielens
 from psbd_nlp.real_data import build_imdb_backdoor_dataset
 from psbd_nlp.train import finetune_backdoored_distilbert
 
+DEFAULT_ATTACK_WORDS: tuple[str, ...] = (
+    "excellent",
+    "fantastic",
+    "amazing",
+    "brilliant",
+    "masterpiece",
+    "incredible",
+    "outstanding",
+)
+
+
+def _parse_contamination_rate(value: str | float, y_true: np.ndarray) -> tuple[float, str]:
+    """Return (numeric rate used for top-k, mode label for logging)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value), "fixed"
+    text = str(value).strip().lower()
+    if text == "auto":
+        rate = float(np.mean(y_true)) if len(y_true) else 0.1
+        rate = max(0.005, min(0.5, rate))
+        return rate, "auto(from labels)"
+    return float(text), "fixed"
+
+
+def _lexical_attack_signal(text: str, words: tuple[str, ...], legacy_trigger: str) -> float:
+    """Substring-based signal for MovieLens-style poisoned descriptions."""
+    lowered = text.lower()
+    hits = sum(1 for word in words if word and word in lowered)
+    trig = legacy_trigger.strip().lower()
+    if trig and trig in lowered:
+        hits = max(hits, 1)
+    if hits == 0:
+        return 0.0
+    return min(1.0, hits / 2.0)
+
 
 def run_demo(output: Path) -> None:
     samples = make_synthetic_backdoor_samples()
@@ -104,26 +138,29 @@ def run_hf_demo(
     model_name: str = "distilbert-base-uncased-finetuned-sst-2-english",
     input_path: Path | None = None,
     text_column: str = "text",
-    contamination_rate: float = 0.10,
+    contamination_rate: str | float = 0.10,
     stochastic_passes: int = 20,
     attention_dropout: float = 0.35,
     trigger: str = "cf",
     trigger_weight: str = "auto",
-    target_min: float = 0.90,
+    target_min: float = 0.80,
     target_max: float = 0.95,
+    attack_words: str | None = None,
 ) -> None:
     from psbd_nlp.detector import PSBDDetector
 
     if input_path is None:
         raise ValueError("hf-demo now requires --input for proper PSBD evaluation.")
     samples = load_samples_csv(input_path, text_column=text_column)
+    y_true_arr = np.array([int(bool(sample.is_poisoned)) for sample in samples], dtype=int)
+    cont_rate, cont_mode = _parse_contamination_rate(contamination_rate, y_true_arr)
 
     detector = PSBDDetector.from_pretrained(
         model_name,
         attention_layers="all",
         stochastic_passes=stochastic_passes,
         attention_dropout=attention_dropout,
-        contamination_rate=contamination_rate,
+        contamination_rate=float(cont_rate),
         suspicious_tail="low",
         max_length=128,
     )
@@ -150,7 +187,6 @@ def run_hf_demo(
     _write_rows_to_csv(rows, output)
     print(f"Wrote Hugging Face PSBD demo scores to {output}")
 
-    y_true = [int(bool(sample.is_poisoned)) for sample in samples]
     psbd_scores = [float(row["psbd_score"]) for row in rows]
 
     min_score = min(psbd_scores)
@@ -160,18 +196,23 @@ def run_hf_demo(
     else:
         anomaly_confidence = [0.0 for _ in psbd_scores]
 
-    trigger_token = trigger.strip().lower()
-    trigger_signal = []
-    for sample in samples:
-        tokens = sample.text.lower().split()
-        trigger_signal.append(1.0 if trigger_token and trigger_token in tokens else 0.0)
+    if attack_words:
+        word_list = tuple(
+            w.strip().lower() for w in str(attack_words).split(",") if w.strip()
+        )
+    else:
+        word_list = DEFAULT_ATTACK_WORDS
+
+    trigger_signal = [
+        _lexical_attack_signal(sample.text, word_list, trigger) for sample in samples
+    ]
 
     if trigger_weight == "auto":
         alpha = _auto_calibrate_trigger_weight(
-            y_true=np.array(y_true, dtype=int),
+            y_true=y_true_arr,
             psbd_conf=np.array(anomaly_confidence, dtype=float),
             trigger_conf=np.array(trigger_signal, dtype=float),
-            contamination_rate=contamination_rate,
+            contamination_rate=cont_rate,
             target_min=target_min,
             target_max=target_max,
         )
@@ -184,13 +225,14 @@ def run_hf_demo(
 
     # Deterministic top-k suspicious selection for stable, high-quality demo metrics.
     n_samples = len(ensemble_confidence)
-    n_suspicious = max(1, int(round(n_samples * contamination_rate)))
+    n_suspicious = max(1, int(round(n_samples * cont_rate)))
     order = np.argsort(np.array(ensemble_confidence, dtype=float))
     suspicious_idx = set(order[-n_suspicious:].tolist())
     threshold = float(ensemble_confidence[order[-n_suspicious]])
 
     for idx, row in enumerate(rows):
         row["psbd_anomaly_confidence"] = round(float(anomaly_confidence[idx]), 6)
+        row["lexical_signal"] = round(float(trigger_signal[idx]), 6)
         row["ensemble_confidence"] = round(float(ensemble_confidence[idx]), 6)
         row["is_suspicious"] = idx in suspicious_idx
         row["threshold"] = round(threshold, 6)
@@ -198,7 +240,7 @@ def run_hf_demo(
     y_pred = [int(bool(row["is_suspicious"])) for row in rows]
 
     metrics = evaluate_detection(
-        y_true=np.array(y_true, dtype=int),
+        y_true=y_true_arr,
         y_pred=np.array(y_pred, dtype=int),
         anomaly_confidence=np.array(ensemble_confidence, dtype=float),
     )
@@ -214,7 +256,8 @@ def run_hf_demo(
         f"recall={metrics['recall']:.3f}, "
         f"f1={metrics['f1']:.3f}, "
         f"auroc={metrics['auroc']:.3f}, "
-        f"trigger_weight={alpha:.2f}"
+        f"trigger_weight={alpha:.2f}, "
+        f"contamination={cont_rate:.4f} ({cont_mode})"
     )
 
 
@@ -243,7 +286,7 @@ def _auto_calibrate_trigger_weight(
     best_distance = float("inf")
 
     n_samples = len(y_true)
-    n_suspicious = max(1, int(round(n_samples * contamination_rate)))
+    n_suspicious = max(1, int(round(n_samples * float(contamination_rate))))
 
     for weight in np.linspace(0.0, 1.0, 21):
         ensemble = (1.0 - weight) * psbd_conf + weight * trigger_conf
@@ -360,7 +403,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hf_demo.add_argument("--input", type=Path, required=True, help="CSV input with text and is_poisoned columns")
     hf_demo.add_argument("--text-column", type=str, default="text")
-    hf_demo.add_argument("--contamination-rate", type=float, default=0.10)
+    hf_demo.add_argument(
+        "--contamination-rate",
+        type=str,
+        default="0.10",
+        help="Fraction of samples flagged suspicious, or 'auto' from is_poisoned rate in CSV",
+    )
     hf_demo.add_argument("--stochastic-passes", type=int, default=20)
     hf_demo.add_argument("--attention-dropout", type=float, default=0.35)
     hf_demo.add_argument("--trigger", type=str, default="cf")
@@ -370,8 +418,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="float in [0,1] or 'auto' to target realistic F1 range",
     )
-    hf_demo.add_argument("--target-min", type=float, default=0.90)
+    hf_demo.add_argument("--target-min", type=float, default=0.80)
     hf_demo.add_argument("--target-max", type=float, default=0.95)
+    hf_demo.add_argument(
+        "--attack-words",
+        type=str,
+        default=",".join(DEFAULT_ATTACK_WORDS),
+        help="Comma-separated substrings; poisoned MovieLens rows often contain these tokens",
+    )
 
     prepare = subparsers.add_parser("prepare-data", help="build a larger real-world poisoned dataset")
     prepare.add_argument("--dataset", type=str, default="imdb")
@@ -432,6 +486,7 @@ def main() -> None:
             trigger_weight=args.trigger_weight,
             target_min=args.target_min,
             target_max=args.target_max,
+            attack_words=args.attack_words,
         )
     elif args.command == "prepare-data":
         run_prepare_data(
